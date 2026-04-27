@@ -13,7 +13,7 @@
     width:100%;height:100%;
     background:#e8e8e0;color:#111;
     font-family:"Courier New","Menlo","Monaco",monospace;
-    overflow:hidden;overscroll-behavior:none;touch-action:manipulation;
+    overflow:hidden;overscroll-behavior:none;touch-action:none;
   }
   body{
     display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -1179,6 +1179,7 @@ const touchStick = {
   active:false,
   pointerId:null,
   baseX:0, baseY:0,
+  gestureBaseClientX:0, gestureBaseClientY:0,
   knobX:0, knobY:0,
   maxDist:56,
 };
@@ -1197,11 +1198,8 @@ function resetTouchAxes(){
   setKey('down', false);
 }
 function updateStickFromEvent(ev){
-  const rect = canvas.getBoundingClientRect();
-  const x = ev.clientX - rect.left;
-  const y = ev.clientY - rect.top;
-  let dx = x - touchStick.baseX;
-  let dy = y - touchStick.baseY;
+  let dx = ev.clientX - touchStick.gestureBaseClientX;
+  let dy = ev.clientY - touchStick.gestureBaseClientY;
   const len = Math.hypot(dx, dy) || 1;
   const capped = Math.min(touchStick.maxDist, len);
   const scale = capped / len;
@@ -1236,43 +1234,41 @@ window.addEventListener('keyup',(e)=>{
     case ' ':case'Enter':case'j':case'J':case'f':case'F':setKey('attack',false);break;
   }
 });
-canvas.addEventListener('pointerdown',(ev)=>{
+document.addEventListener('pointerdown',(ev)=>{
   if (!touchControls.enabled) return;
   ev.preventDefault();
-  const rect = canvas.getBoundingClientRect();
-  const x = ev.clientX - rect.left;
-  const y = ev.clientY - rect.top;
-  if (x < rect.width * 0.5 && !touchStick.active){
+  if (ev.clientX < window.innerWidth * 0.5 && !touchStick.active){
+    const rect = canvas.getBoundingClientRect();
     touchStick.active = true;
     touchStick.pointerId = ev.pointerId;
-    touchStick.baseX = x;
-    touchStick.baseY = y;
-    touchStick.knobX = x;
-    touchStick.knobY = y;
+    touchStick.gestureBaseClientX = ev.clientX;
+    touchStick.gestureBaseClientY = ev.clientY;
+    touchStick.baseX = Math.min(rect.width * 0.22, 120);
+    touchStick.baseY = rect.height * 0.78;
+    touchStick.knobX = touchStick.baseX;
+    touchStick.knobY = touchStick.baseY;
     updateStickFromEvent(ev);
-  } else if (x >= rect.width * 0.5){
+  } else if (ev.clientX >= window.innerWidth * 0.5){
     setKey('attack', true);
     setKey('attack', false);
   }
-});
-canvas.addEventListener('pointermove',(ev)=>{
+},{passive:false});
+document.addEventListener('pointermove',(ev)=>{
   if (!touchControls.enabled) return;
   if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
   ev.preventDefault();
   updateStickFromEvent(ev);
-});
-canvas.addEventListener('pointerup',(ev)=>{
+},{passive:false});
+document.addEventListener('pointerup',(ev)=>{
   if (!touchControls.enabled) return;
   if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
-  ev.preventDefault();
   touchStick.active = false;
   touchStick.pointerId = null;
   resetTouchAxes();
 });
-canvas.addEventListener('pointercancel',(ev)=>{
+document.addEventListener('pointercancel',(ev)=>{
   if (!touchControls.enabled) return;
   if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
-  ev.preventDefault();
   touchStick.active = false;
   touchStick.pointerId = null;
   resetTouchAxes();
