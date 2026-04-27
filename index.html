@@ -1,0 +1,1464 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#fff">
+<title>ASCII DOOM</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;}
+  html,body{
+    width:100%;height:100%;
+    background:#e8e8e0;color:#111;
+    font-family:"Courier New","Menlo","Monaco",monospace;
+    overflow:hidden;overscroll-behavior:none;touch-action:manipulation;
+  }
+  body{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding-top:env(safe-area-inset-top);
+    padding-bottom:env(safe-area-inset-bottom);
+    gap:8px;
+  }
+  .frame{
+    position:relative;display:flex;flex-direction:column;align-items:center;
+    gap:8px;width:100%;max-width:1200px;padding:0 6px;
+  }
+  .screen-wrap{
+    position:relative;width:100%;background:#fff;
+    border:2px solid #222;box-shadow:4px 4px 0 #222;
+  }
+  canvas{ display:block;width:100%;height:auto;image-rendering:pixelated;touch-action:none; }
+  .screen-wrap::after{
+    content:"";position:absolute;inset:0;pointer-events:none;
+    background:repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,0.04) 2px 3px);
+    mix-blend-mode:multiply;
+  }
+  button.btn{
+    background:#fff;color:#111;border:1px solid #666;
+    font-family:inherit;font-size:18px;cursor:pointer;
+    transition:transform 60ms ease,background 60ms ease,color 60ms ease;
+    border-radius:2px;letter-spacing:0.05em;
+  }
+  .overlay{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,0.88);z-index:5;
+  }
+  .overlay.show{ display:flex; }
+  .overlay-inner{ text-align:center;color:#e6e6dd;letter-spacing:0.4em; }
+  .overlay-inner h1{ font-size:22px;font-weight:normal;margin-bottom:6px; }
+  .overlay-inner p{ font-size:12px;color:#7a7a70;margin-bottom:18px;letter-spacing:0.2em; }
+  .overlay-inner button{
+    background:transparent;color:#e6e6dd;border:1px solid #e6e6dd;
+    padding:10px 22px;font-family:inherit;font-size:14px;letter-spacing:0.3em;cursor:pointer;
+  }
+  .overlay-inner button:active{ background:#e6e6dd;color:#000; }
+  .hint{ font-size:10px;letter-spacing:0.2em;color:#888;text-align:center;text-transform:uppercase; }
+  @media (hover:hover){ button.btn:hover{ background:#eee; } }
+</style>
+</head>
+<body>
+  <div class="frame">
+    <div class="screen-wrap">
+      <canvas id="screen" width="800" height="480"></canvas>
+      <div class="overlay" id="gameover">
+        <div class="overlay-inner">
+          <h1>YOU DIED</h1>
+          <p>倒した敵 : <span id="finalScore">0</span></p>
+          <button id="restart">RESTART</button>
+        </div>
+      </div>
+    </div>
+    <div class="hint">pc: arrows / wasd / space / m &nbsp;&middot;&nbsp; mobile: left stick + right tap</div>
+  </div>
+
+<script>
+"use strict";
+
+/* ============================================================
+   GRID & DISPLAY
+============================================================ */
+const COLS = 120, ROWS = 36;
+const VIEW_ROWS       = 33;
+const HUD_ROW_DIVIDER = 33;
+const HUD_ROW_HP      = 34;
+const HUD_ROW_ENEMIES = 35;
+
+const canvas = document.getElementById('screen');
+const ctx    = canvas.getContext('2d');
+let CHAR_W = 0, CHAR_H = 0, FONT_SIZE = 0, DPR = 1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio || 1, 3);
+  const cssW = canvas.parentElement.clientWidth;
+  CHAR_W = cssW / COLS;
+  CHAR_H = CHAR_W * 1.7;
+  const cssH = CHAR_H * ROWS;
+  canvas.style.width  = cssW + 'px';
+  canvas.style.height = cssH + 'px';
+  canvas.width  = Math.round(cssW * DPR);
+  canvas.height = Math.round(cssH * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  FONT_SIZE = Math.floor(CHAR_H * 0.95);
+  ctx.font = FONT_SIZE + 'px "Courier New","Menlo",monospace';
+  ctx.textBaseline = 'top';
+  ctx.textAlign    = 'center';
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 80));
+
+/* ============================================================
+   MAP
+============================================================ */
+const MAZE_W = 31; // 半分サイズ（奇数推奨）
+const MAZE_H = 19;
+let MAP_RAW = [];
+let MAP_W = MAZE_W;
+let MAP_H = MAZE_H;
+let startCell = { x:1, y:1 };
+let goalCell  = { x:MAP_W-2, y:MAP_H-2 };
+
+function shuffle(arr){
+  for (let i=arr.length-1; i>0; i--){
+    const j = Math.floor(Math.random()*(i+1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+function generateMaze(w, h){
+  const W = (w % 2 === 0) ? w-1 : w;
+  const H = (h % 2 === 0) ? h-1 : h;
+  const grid = Array.from({ length:H }, () => Array(W).fill('#'));
+  const stack = [[1,1]];
+  grid[1][1]='.';
+  const dirs = [[2,0],[-2,0],[0,2],[0,-2]];
+
+  while (stack.length){
+    const [cx, cy] = stack[stack.length-1];
+    let moved = false;
+    for (const [dx,dy] of shuffle(dirs.slice())){
+      const nx = cx + dx, ny = cy + dy;
+      if (nx<=0 || ny<=0 || nx>=W-1 || ny>=H-1) continue;
+      if (grid[ny][nx] !== '#') continue;
+      grid[cy + dy/2][cx + dx/2] = '.';
+      grid[ny][nx] = '.';
+      stack.push([nx, ny]);
+      moved = true;
+      break;
+    }
+    if (!moved) stack.pop();
+  }
+
+  const dist = Array.from({ length:H }, () => Array(W).fill(-1));
+  const q = [[1,1]];
+  dist[1][1] = 0;
+  let best = [1,1], bestD = 0;
+  while (q.length){
+    const [x,y] = q.shift();
+    for (const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy;
+      if (nx<0||ny<0||nx>=W||ny>=H) continue;
+      if (grid[ny][nx]==='#' || dist[ny][nx]!==-1) continue;
+      dist[ny][nx] = dist[y][x] + 1;
+      if (dist[ny][nx] > bestD){ bestD = dist[ny][nx]; best=[nx,ny]; }
+      q.push([nx,ny]);
+    }
+  }
+
+  startCell = { x:1, y:1 };
+  goalCell = { x:best[0], y:best[1] };
+  grid[startCell.y][startCell.x] = 'S';
+  grid[goalCell.y][goalCell.x] = 'G';
+  MAP_W = W; MAP_H = H;
+  MAP_RAW = grid.map(row => row.join(''));
+}
+
+function tileAt(x, y){
+  const ix = Math.floor(x), iy = Math.floor(y);
+  if (ix<0||iy<0||ix>=MAP_W||iy>=MAP_H) return '#';
+  return MAP_RAW[iy][ix];
+}
+function isWall(x, y){ return tileAt(x,y) === '#'; }
+
+/* ============================================================
+   PLAYER
+============================================================ */
+const player = {
+  x:3.5, y:3.5, angle:0,
+  hp:100, maxHp:100,
+  attackPower:12, attackCooldown:0,
+  hurtFlash:0, attackFlash:0,
+  fistPunch:0,
+  fistSide:-1,
+  radius:0.22,
+};
+
+/* ============================================================
+   ENEMIES
+============================================================ */
+const ENEMY_TYPES = {
+  slime:   { name:'スライム', char:'ス', color:'#1a9922', hp:15,  speed:0.55, dmg:[1,2], atkRange:0.95, atkCD:1.4 },
+  golem:   { name:'ゴーレム', char:'ゴ', color:'#996622', hp:38,  speed:0.30, dmg:[2,4], atkRange:1.05, atkCD:1.8 },
+  chimera: { name:'キメラ',   char:'キ', color:'#bb33cc', hp:22,  speed:0.75, dmg:[1,3], atkRange:1.00, atkCD:1.3 },
+  metal:   { name:'メタル',   char:'メ', color:'#3377cc', hp:8,   speed:1.10, dmg:[1,2], atkRange:0.90, atkCD:1.0 },
+  ghost:   { name:'ゴースト', char:'幽', color:'#5599aa', hp:18,  speed:0.95, dmg:[1,3], atkRange:0.95, atkCD:1.1 },
+  demon:   { name:'デーモン', char:'デ', color:'#cc2222', hp:30,  speed:0.85, dmg:[2,5], atkRange:1.00, atkCD:1.2 },
+  dragon:  { name:'ドラゴン', char:'ド', color:'#dd6600', hp:60,  speed:0.45, dmg:[3,6], atkRange:1.10, atkCD:1.6 },
+  king:    { name:'魔王',     char:'王', color:'#bb8800', hp:90,  speed:0.40, dmg:[4,8], atkRange:1.15, atkCD:2.0 },
+};
+const TYPE_KEYS = Object.keys(ENEMY_TYPES);
+
+let enemies = [], kills = 0, spawnTimer = 0;
+let statusMsg = '', statusMsgTimer = 0;
+
+function spawnEnemy(typeKey, x, y){
+  const t = ENEMY_TYPES[typeKey];
+  enemies.push({
+    typeKey, type:t, x, y,
+    hp:t.hp, maxHp:t.hp, char:t.char, color:t.color,
+    atkTimer: t.atkCD * (0.5 + Math.random()*0.5),
+    hurtTimer:0,
+    radius:0.22,
+    isEnemy:true,
+  });
+}
+function spawnInitialEnemies(){
+  enemies = [];
+  const initial = 6;
+  for (let i=0; i<initial; i++) spawnRandomEnemy();
+}
+function spawnRandomEnemy(){
+  for (let tries=0;tries<90;tries++){
+    const x = 1+Math.random()*(MAP_W-2), y = 1+Math.random()*(MAP_H-2);
+    if (isWall(x,y)) continue;
+    const dx=x-player.x, dy=y-player.y;
+    if (dx*dx+dy*dy<25) continue;
+    const gx=x-goalCell.x-0.5, gy=y-goalCell.y-0.5;
+    if (gx*gx+gy*gy<10) continue;
+    let overlap=false;
+    for (const e of enemies){ const ex=e.x-x,ey=e.y-y; if(ex*ex+ey*ey<1){overlap=true;break;} }
+    if (overlap) continue;
+    let pool=['slime','slime','metal'];
+    if (kills>=3)  pool.push('chimera','ghost');
+    if (kills>=6)  pool.push('chimera','golem','demon');
+    if (kills>=10) pool.push('golem','demon','dragon');
+    if (kills>=18) pool.push('dragon','king');
+    spawnEnemy(pool[Math.floor(Math.random()*pool.length)], x, y);
+    return;
+  }
+}
+
+/* ============================================================
+   RAYCASTING
+============================================================ */
+const FOV      = Math.PI / 1.8;
+const MAX_DIST = 34;
+
+function castRay(angle){
+  const cos=Math.cos(angle), sin=Math.sin(angle);
+  const STEP=0.05;
+  let prevIx=Math.floor(player.x), prevIy=Math.floor(player.y), d=STEP;
+  while (d<MAX_DIST){
+    const x=player.x+cos*d, y=player.y+sin*d;
+    const ix=Math.floor(x), iy=Math.floor(y);
+    if (isWall(x,y)){
+      let side;
+      if      (ix!==prevIx && iy===prevIy) side=1;
+      else if (iy!==prevIy && ix===prevIx) side=0;
+      else side = Math.abs(cos)>Math.abs(sin)?1:0;
+      return { distance:d, side };
+    }
+    prevIx=ix; prevIy=iy; d+=STEP;
+  }
+  return { distance:MAX_DIST, side:0 };
+}
+
+/* ============================================================
+   FRAME GRID  (80 × 24)
+============================================================ */
+const gridChar  = [];
+const gridColor = [];
+for (let r=0;r<ROWS;r++){
+  gridChar.push(new Array(COLS).fill(' '));
+  gridColor.push(new Array(COLS).fill('#111'));
+}
+const grid = gridChar; // backward compat alias
+
+function clearGrid(){
+  for (let r=0;r<ROWS;r++)
+    for (let c=0;c<COLS;c++){ gridChar[r][c]=' '; gridColor[r][c]='#111'; }
+}
+
+/* ============================================================
+   ★ OFFSCREEN 低ポリ 3D レンダラー → ASCII 変換 ★
+
+   パイプライン:
+     render3D()   : オフスクリーン Canvas に3Dシーンを描画
+     sampleAscii(): 各 PX_CELL×PX_CELL ピクセルブロックを
+                    輝度→ASCII文字 / 平均色→文字色 に変換
+============================================================ */
+const PX_CELL = 4;                       // ASCII 1セル = 4×4 px
+const OFF_W   = COLS     * PX_CELL;      // 320 px
+const OFF_H   = VIEW_ROWS * PX_CELL;     // 84  px
+
+const offscreen = document.createElement('canvas');
+offscreen.width = OFF_W; offscreen.height = OFF_H;
+const offCtx = offscreen.getContext('2d');
+const maskEnemy = document.createElement('canvas');
+maskEnemy.width = OFF_W; maskEnemy.height = OFF_H;
+const maskEnemyCtx = maskEnemy.getContext('2d');
+const maskFist = document.createElement('canvas');
+maskFist.width = OFF_W; maskFist.height = OFF_H;
+const maskFistCtx = maskFist.getContext('2d');
+const maskWall = document.createElement('canvas');
+maskWall.width = OFF_W; maskWall.height = OFF_H;
+const maskWallCtx = maskWall.getContext('2d');
+
+// 列ごとの壁距離（スプライトオクルージョン用）
+const offWallDist = new Float32Array(OFF_W);
+
+// 輝度→文字 マップ（暗い=密度高）
+// 各文字の「黒面積比」が概ね単調増加になるよう選定
+const WALL_DENSITY      = '  .,:;-_=+!|/\\()rlviLJcouzxeaXAHMNW%#@▒▓█';
+const WALL_DENSITY_MAX  = WALL_DENSITY.length - 1;
+const ENEMY_DENSITY     = '@@%%##██';
+const ENEMY_DENSITY_MAX = ENEMY_DENSITY.length - 1;
+const FIST_DENSITY      = '░▒▓▀▄▌▐▒▓▓█▓█▓█';
+const FIST_DENSITY_MAX  = FIST_DENSITY.length - 1;
+const CEIL_DENSITY      = '    ..`\'^';
+const CEIL_DENSITY_MAX  = CEIL_DENSITY.length - 1;
+const FLOOR_DENSITY     = '  .,:;i1tfLCG08@';
+const FLOOR_DENSITY_MAX = FLOOR_DENSITY.length - 1;
+
+// 天井・床グラデーション（初期化時に1回だけ作成）
+const ceilGrad = offCtx.createLinearGradient(0, 0, 0, OFF_H * 0.5);
+ceilGrad.addColorStop(0, '#0b1220');
+ceilGrad.addColorStop(1, '#243853');
+const floorGrad = offCtx.createLinearGradient(0, OFF_H * 0.5, 0, OFF_H);
+floorGrad.addColorStop(0, '#4f3621');
+floorGrad.addColorStop(1, '#1f1208');
+
+/* ---------- 3D シーン描画 ---------- */
+function render3D(){
+  const W=OFF_W, H=OFF_H;
+  maskEnemyCtx.clearRect(0, 0, W, H);
+  maskFistCtx.clearRect(0, 0, W, H);
+  maskWallCtx.clearRect(0, 0, W, H);
+  let prevTop = -999, prevBot = -999;
+
+  // 1. 天井
+  offCtx.fillStyle = ceilGrad;
+  offCtx.fillRect(0, 0, W, H*0.5+1);
+
+  // 2. 床
+  offCtx.fillStyle = floorGrad;
+  offCtx.fillRect(0, H*0.5, W, H*0.5+1);
+
+  // 3. 壁ストリップ（列単位・距離ライティング）
+  for (let col=0; col<W; col++){
+    const t        = col / (W-1);
+    const rayAngle = player.angle - FOV/2 + t*FOV;
+    const hit      = castRay(rayAngle);
+    const corrected = hit.distance * Math.cos(rayAngle - player.angle);
+    offWallDist[col] = corrected;
+    if (corrected >= MAX_DIST) continue;
+
+    const wallH   = Math.min(H, H / Math.max(corrected*0.55, 0.45));
+    const wallTop = (H - wallH) * 0.5;
+
+    // 近い=明るい / 遠い=暗い、壁の向きで色調を変えて方向感覚を補助
+    const lit = Math.max(0.04, 1.0 - corrected / 13);
+    let r, g, bl;
+    if (hit.side === 1) {
+      // E/W壁（縦面）: クールなブルーグレー
+      const b = lit * 0.72;
+      r  = Math.round(b*160 + 10);
+      g  = Math.round(b*178 + 10);
+      bl = Math.round(b*205 + 14);
+    } else {
+      // N/S壁（横面）: ウォームな石色（従来色）
+      r  = Math.round(lit*210 + 12);
+      g  = Math.round(lit*190 + 10);
+      bl = Math.round(lit*168 +  8);
+    }
+    offCtx.fillStyle = `rgb(${r},${g},${bl})`;
+    offCtx.fillRect(col, wallTop, 1, wallH);
+
+    // 壁の輪郭（黒線）: 上端/下端と角の段差を強調
+    const topI = Math.round(wallTop);
+    const botI = Math.round(wallTop + wallH - 1);
+    offCtx.fillStyle = 'rgb(0,0,0)';
+    offCtx.fillRect(col, topI,     1, 2);
+    offCtx.fillRect(col, botI - 1, 1, 2);
+    if (prevTop > -900 && Math.abs(topI - prevTop) >= 2){
+      const y0 = Math.min(topI, prevTop) - 1;
+      offCtx.fillRect(col, y0, 1, Math.abs(topI - prevTop) + 3);
+    }
+    if (prevBot > -900 && Math.abs(botI - prevBot) >= 2){
+      const y0 = Math.min(botI, prevBot) - 1;
+      offCtx.fillRect(col, y0, 1, Math.abs(botI - prevBot) + 3);
+    }
+    prevTop = topI;
+    prevBot = botI;
+
+    maskWallCtx.fillStyle = '#ffffff';
+    maskWallCtx.fillRect(col, wallTop, 1, wallH);
+  }
+
+  // 4. 敵スプライト（奥から手前の順、列単位オクルージョン）
+  const visible = [];
+  for (const e of enemies){
+    const dx=e.x-player.x, dy=e.y-player.y;
+    const dist = Math.sqrt(dx*dx+dy*dy);
+    let ang = Math.atan2(dy,dx) - player.angle;
+    while (ang < -Math.PI) ang += Math.PI*2;
+    while (ang >  Math.PI) ang -= Math.PI*2;
+    if (Math.abs(ang) > FOV/2+0.15) continue;
+    const corrected = dist * Math.cos(ang);
+    if (corrected <= 0.25) continue;
+    visible.push({ e, ang, corrected });
+  }
+  visible.sort((a,b) => b.corrected - a.corrected);
+
+  for (const v of visible){
+    const { e, ang, corrected } = v;
+    const screenX   = (ang + FOV/2) / FOV * W;
+    const spriteH   = Math.min(H, H / Math.max(corrected*0.55, 0.45));
+    const spriteW   = spriteH * (e.typeKey === 'slime' ? 0.95 : 0.80);
+    const spriteTop = (H - spriteH) * 0.5;
+    const spriteLeft = screenX - spriteW * 0.5;
+    const spriteRight = screenX + spriteW * 0.5;
+    const x0 = Math.max(0, Math.floor(spriteLeft));
+    const x1 = Math.min(W - 1, Math.ceil(spriteRight));
+    let occluded = true;
+    for (let px=x0; px<=x1; px++){
+      if (corrected < offWallDist[px] - 0.02){ occluded = false; break; }
+    }
+    if (occluded) continue;
+    drawEnemySilhouette(e, spriteLeft, spriteTop, spriteW, spriteH, corrected);
+  }
+
+  // 5. フラッシュ演出（ダメージ=赤, 攻撃=黄白）
+  if (player.hurtFlash > 0){
+    offCtx.fillStyle = `rgba(220,10,10,${0.30 * player.hurtFlash / 0.18})`;
+    offCtx.fillRect(0,0,W,H);
+  } else if (player.attackFlash > 0){
+    offCtx.fillStyle = `rgba(240,240,160,0.18)`;
+    offCtx.fillRect(0,0,W,H);
+  }
+
+  // 6. 一人称こぶし
+  renderFistOffscreen();
+}
+
+function drawEnemySilhouette(e, x, y, w, h, corrected){
+  const flash = e.hurtTimer > 0 && (Math.floor(e.hurtTimer*30)%2===0);
+  const t = performance.now() * 0.001;
+  const baseR = flash ? 255 : parseInt(e.color.slice(1,3), 16);
+  const baseG = flash ? 34  : parseInt(e.color.slice(3,5), 16);
+  const baseB = flash ? 0   : parseInt(e.color.slice(5,7), 16);
+  const lit = Math.max(0.52, Math.min(1.22, 1.08 - corrected * 0.045));
+  const mainColor = `rgb(${Math.round(baseR*lit)},${Math.round(baseG*lit)},${Math.round(baseB*lit)})`;
+  const shadeColor = `rgb(${Math.round(baseR*lit*0.62)},${Math.round(baseG*lit*0.62)},${Math.round(baseB*lit*0.62)})`;
+  const outlineColor = flash ? '#ffdbdb' : '#0e0a08';
+
+  const body = new Path2D();
+  const details = new Path2D();
+  const outline = new Path2D();
+
+  const px = (u) => x + w * u;
+  const py = (v) => y + h * v;
+
+  if (e.typeKey === 'slime'){
+    const wobble = Math.sin(t * 7 + e.x * 1.7 + e.y) * 0.04;
+    body.moveTo(px(0.08), py(0.86));
+    body.quadraticCurveTo(px(0.5), py(0.24 + wobble), px(0.92), py(0.86));
+    body.quadraticCurveTo(px(0.50), py(0.99), px(0.08), py(0.86));
+    details.moveTo(px(0.20), py(0.70));
+    details.quadraticCurveTo(px(0.50), py(0.58 + wobble * 0.5), px(0.80), py(0.70));
+  } else if (e.typeKey === 'golem'){
+    body.moveTo(px(0.14), py(0.92));
+    body.lineTo(px(0.12), py(0.58));
+    body.lineTo(px(0.20), py(0.34));
+    body.lineTo(px(0.33), py(0.16));
+    body.lineTo(px(0.67), py(0.16));
+    body.lineTo(px(0.80), py(0.34));
+    body.lineTo(px(0.88), py(0.58));
+    body.lineTo(px(0.86), py(0.92));
+    body.lineTo(px(0.67), py(0.95));
+    body.lineTo(px(0.33), py(0.95));
+    body.closePath();
+    details.moveTo(px(0.28), py(0.46));
+    details.lineTo(px(0.72), py(0.46));
+    details.moveTo(px(0.25), py(0.64));
+    details.lineTo(px(0.75), py(0.64));
+    details.moveTo(px(0.36), py(0.24));
+    details.lineTo(px(0.64), py(0.24));
+  } else if (e.typeKey === 'chimera'){
+    body.moveTo(px(0.22), py(0.93));
+    body.lineTo(px(0.18), py(0.56));
+    body.quadraticCurveTo(px(0.23), py(0.24), px(0.50), py(0.14));
+    body.quadraticCurveTo(px(0.77), py(0.24), px(0.82), py(0.56));
+    body.lineTo(px(0.78), py(0.93));
+    body.closePath();
+    body.moveTo(px(0.18), py(0.52));
+    body.lineTo(px(0.00), py(0.30));
+    body.lineTo(px(0.18), py(0.62));
+    body.closePath();
+    body.moveTo(px(0.82), py(0.52));
+    body.lineTo(px(1.00), py(0.30));
+    body.lineTo(px(0.82), py(0.62));
+    body.closePath();
+    body.moveTo(px(0.40), py(0.16));
+    body.lineTo(px(0.30), py(0.03));
+    body.lineTo(px(0.45), py(0.12));
+    body.closePath();
+    body.moveTo(px(0.60), py(0.16));
+    body.lineTo(px(0.70), py(0.03));
+    body.lineTo(px(0.55), py(0.12));
+    body.closePath();
+    details.moveTo(px(0.32), py(0.56));
+    details.lineTo(px(0.68), py(0.56));
+  } else if (e.typeKey === 'metal'){
+    body.moveTo(px(0.18), py(0.88));
+    body.lineTo(px(0.18), py(0.26));
+    body.lineTo(px(0.34), py(0.12));
+    body.lineTo(px(0.66), py(0.12));
+    body.lineTo(px(0.82), py(0.26));
+    body.lineTo(px(0.82), py(0.88));
+    body.closePath();
+    details.moveTo(px(0.24), py(0.44));
+    details.lineTo(px(0.76), py(0.44));
+    details.moveTo(px(0.24), py(0.63));
+    details.lineTo(px(0.76), py(0.63));
+    details.moveTo(px(0.42), py(0.20));
+    details.lineTo(px(0.58), py(0.20));
+  } else if (e.typeKey === 'ghost'){
+    const drift = Math.sin(t * 6 + e.x * 2.3) * 0.03;
+    body.moveTo(px(0.12), py(0.86));
+    body.quadraticCurveTo(px(0.10), py(0.55), px(0.26), py(0.33));
+    body.quadraticCurveTo(px(0.50), py(0.10 + drift), px(0.74), py(0.33));
+    body.quadraticCurveTo(px(0.90), py(0.55), px(0.88), py(0.86));
+    body.quadraticCurveTo(px(0.78), py(0.78), px(0.67), py(0.88));
+    body.quadraticCurveTo(px(0.56), py(0.79), px(0.50), py(0.91));
+    body.quadraticCurveTo(px(0.42), py(0.79), px(0.32), py(0.88));
+    body.quadraticCurveTo(px(0.22), py(0.78), px(0.12), py(0.86));
+    details.arc(px(0.40), py(0.46), Math.max(1.3, w*0.05), 0, Math.PI*2);
+    details.arc(px(0.60), py(0.46), Math.max(1.3, w*0.05), 0, Math.PI*2);
+  } else if (e.typeKey === 'demon'){
+    body.moveTo(px(0.24), py(0.93));
+    body.lineTo(px(0.19), py(0.56));
+    body.quadraticCurveTo(px(0.22), py(0.22), px(0.50), py(0.12));
+    body.quadraticCurveTo(px(0.78), py(0.22), px(0.81), py(0.56));
+    body.lineTo(px(0.76), py(0.93));
+    body.closePath();
+    body.moveTo(px(0.33), py(0.18));
+    body.lineTo(px(0.24), py(-0.02));
+    body.lineTo(px(0.40), py(0.13));
+    body.closePath();
+    body.moveTo(px(0.67), py(0.18));
+    body.lineTo(px(0.76), py(-0.02));
+    body.lineTo(px(0.60), py(0.13));
+    body.closePath();
+    details.moveTo(px(0.31), py(0.56));
+    details.lineTo(px(0.69), py(0.56));
+    details.moveTo(px(0.36), py(0.76));
+    details.lineTo(px(0.64), py(0.76));
+  } else if (e.typeKey === 'dragon'){
+    body.moveTo(px(0.23), py(0.92));
+    body.lineTo(px(0.18), py(0.56));
+    body.quadraticCurveTo(px(0.22), py(0.20), px(0.50), py(0.10));
+    body.quadraticCurveTo(px(0.78), py(0.20), px(0.82), py(0.56));
+    body.lineTo(px(0.77), py(0.92));
+    body.closePath();
+    body.moveTo(px(0.18), py(0.48));
+    body.lineTo(px(0.01), py(0.26));
+    body.lineTo(px(0.20), py(0.60));
+    body.closePath();
+    body.moveTo(px(0.82), py(0.48));
+    body.lineTo(px(0.99), py(0.26));
+    body.lineTo(px(0.80), py(0.60));
+    body.closePath();
+    body.moveTo(px(0.31), py(0.16));
+    body.lineTo(px(0.22), py(-0.04));
+    body.lineTo(px(0.39), py(0.12));
+    body.closePath();
+    body.moveTo(px(0.69), py(0.16));
+    body.lineTo(px(0.78), py(-0.04));
+    body.lineTo(px(0.61), py(0.12));
+    body.closePath();
+    details.moveTo(px(0.30), py(0.54));
+    details.lineTo(px(0.70), py(0.54));
+  } else if (e.typeKey === 'king'){
+    body.moveTo(px(0.20), py(0.94));
+    body.lineTo(px(0.15), py(0.48));
+    body.quadraticCurveTo(px(0.24), py(0.22), px(0.50), py(0.14));
+    body.quadraticCurveTo(px(0.76), py(0.22), px(0.85), py(0.48));
+    body.lineTo(px(0.80), py(0.94));
+    body.closePath();
+    body.moveTo(px(0.16), py(0.48));
+    body.lineTo(px(0.06), py(0.90));
+    body.lineTo(px(0.20), py(0.90));
+    body.closePath();
+    body.moveTo(px(0.84), py(0.48));
+    body.lineTo(px(0.94), py(0.90));
+    body.lineTo(px(0.80), py(0.90));
+    body.closePath();
+    body.moveTo(px(0.30), py(0.14));
+    body.lineTo(px(0.34), py(-0.02));
+    body.lineTo(px(0.42), py(0.12));
+    body.closePath();
+    body.moveTo(px(0.50), py(0.12));
+    body.lineTo(px(0.50), py(-0.06));
+    body.lineTo(px(0.58), py(0.12));
+    body.closePath();
+    body.moveTo(px(0.70), py(0.14));
+    body.lineTo(px(0.66), py(-0.02));
+    body.lineTo(px(0.58), py(0.12));
+    body.closePath();
+    details.moveTo(px(0.32), py(0.55));
+    details.lineTo(px(0.68), py(0.55));
+    details.moveTo(px(0.29), py(0.76));
+    details.lineTo(px(0.71), py(0.76));
+  } else {
+    body.moveTo(px(0.24), py(0.92));
+    body.lineTo(px(0.19), py(0.56));
+    body.quadraticCurveTo(px(0.22), py(0.22), px(0.50), py(0.12));
+    body.quadraticCurveTo(px(0.78), py(0.22), px(0.81), py(0.56));
+    body.lineTo(px(0.76), py(0.92));
+    body.closePath();
+    details.moveTo(px(0.32), py(0.57));
+    details.lineTo(px(0.68), py(0.57));
+  }
+
+  outline.addPath(body);
+  offCtx.fillStyle = mainColor;
+  offCtx.fill(body);
+  if (e.typeKey !== 'slime' && e.typeKey !== 'ghost'){
+    offCtx.fillStyle = shadeColor;
+    offCtx.fillRect(px(0.50), py(0.16), Math.max(1, w*0.24), Math.max(1, h*0.72));
+  }
+  offCtx.strokeStyle = outlineColor;
+  offCtx.lineWidth = Math.max(1, w * 0.05);
+  offCtx.stroke(outline);
+  offCtx.strokeStyle = flash ? '#ffe5e5' : 'rgba(10,8,6,0.6)';
+  offCtx.lineWidth = Math.max(1, w * 0.03);
+  offCtx.stroke(details);
+
+  maskEnemyCtx.fillStyle = '#ffffff';
+  maskEnemyCtx.fill(body);
+  maskEnemyCtx.strokeStyle = '#ffffff';
+  maskEnemyCtx.lineWidth = Math.max(1, w * 0.08);
+  maskEnemyCtx.stroke(outline);
+}
+
+/* ---------- こぶし描画 ---------- */
+function renderFistOffscreen(){
+  const W=OFF_W, H=OFF_H;
+  const punch = player.fistPunch > 0 ? Math.sin(Math.PI * (1 - player.fistPunch / 0.38)) : 0;
+  const drawHand = (side, handPunch) => {
+    const toCenter = side === 1 ? -1 : 1;
+    const baseX = side === 1 ? W*0.89 : W*0.11;
+    const baseY = H*0.86;
+    const targetX = side === 1 ? W*0.55 : W*0.45;
+
+    const cx = baseX + (targetX - baseX) * handPunch;
+    const cy = baseY - handPunch * H * 0.32;
+    const fw = W*(0.15 - handPunch*0.08);
+    const fh = H*(0.20 - handPunch*0.10);
+    const fx = cx - fw*0.5, fy = cy - fh*0.5;
+    const px = (t) => cx + t * fw * toCenter;
+    const edgeOuter = side === 1 ? W*0.98 : W*0.02;
+    const edgeInner = side === 1 ? W*0.76 : W*0.24;
+
+    // 下地シルエット
+    offCtx.fillStyle = '#b06848';
+    offCtx.beginPath();
+    offCtx.moveTo(edgeOuter, H+1);
+    offCtx.lineTo(edgeInner, H+1);
+    offCtx.lineTo(px(0.26), cy+fh*0.34);
+    offCtx.lineTo(px(-0.17), cy+fh*0.24);
+    offCtx.closePath();
+    offCtx.fill();
+    offCtx.beginPath();
+    offCtx.moveTo(px(0.47), fy+fh*0.18);
+    offCtx.lineTo(px(-0.30), fy+fh*0.08);
+    offCtx.lineTo(px(-0.47), fy+fh*0.54);
+    offCtx.lineTo(px(-0.23), fy+fh*0.96);
+    offCtx.lineTo(px(0.40), fy+fh*0.90);
+    offCtx.closePath();
+    offCtx.fill();
+
+    maskFistCtx.fillStyle = '#ffffff';
+    maskFistCtx.beginPath();
+    maskFistCtx.moveTo(edgeOuter, H+1);
+    maskFistCtx.lineTo(edgeInner, H+1);
+    maskFistCtx.lineTo(px(0.26), cy+fh*0.34);
+    maskFistCtx.lineTo(px(-0.17), cy+fh*0.24);
+    maskFistCtx.closePath();
+    maskFistCtx.fill();
+    maskFistCtx.beginPath();
+    maskFistCtx.moveTo(px(0.47), fy+fh*0.18);
+    maskFistCtx.lineTo(px(-0.30), fy+fh*0.08);
+    maskFistCtx.lineTo(px(-0.47), fy+fh*0.54);
+    maskFistCtx.lineTo(px(-0.23), fy+fh*0.96);
+    maskFistCtx.lineTo(px(0.40), fy+fh*0.90);
+    maskFistCtx.closePath();
+    maskFistCtx.fill();
+
+    // 前腕の面
+    offCtx.beginPath();
+    offCtx.moveTo(side === 1 ? W*0.96 : W*0.04, H+1);
+    offCtx.lineTo(side === 1 ? W*0.78 : W*0.22, H+1);
+    offCtx.lineTo(px(0.18), cy+fh*0.28);
+    offCtx.lineTo(px(-0.12), cy+fh*0.22);
+    offCtx.closePath();
+    const armGrad = offCtx.createLinearGradient(px(0.35), cy, px(-0.2), cy+fh*0.7);
+    armGrad.addColorStop(0, '#c87858');
+    armGrad.addColorStop(1, '#f0a882');
+    offCtx.fillStyle = armGrad;
+    offCtx.fill();
+
+    // こぶしの面
+    offCtx.beginPath();
+    offCtx.moveTo(px(0.42), fy+fh*0.20);
+    offCtx.lineTo(px(-0.28), fy+fh*0.10);
+    offCtx.lineTo(px(-0.45), fy+fh*0.52);
+    offCtx.lineTo(px(-0.24), fy+fh*0.92);
+    offCtx.lineTo(px(0.35), fy+fh*0.86);
+    offCtx.closePath();
+    const fistGrad = offCtx.createLinearGradient(fx, fy, fx+fw, fy+fh);
+    fistGrad.addColorStop(0, '#f5c8a0');
+    fistGrad.addColorStop(0.55, '#e0a070');
+    fistGrad.addColorStop(1, '#c07858');
+    offCtx.fillStyle = fistGrad;
+    offCtx.fill();
+
+    offCtx.beginPath();
+    offCtx.moveTo(px(0.32), fy+fh*0.44);
+    offCtx.lineTo(px(-0.22), fy+fh*0.36);
+    offCtx.lineTo(px(-0.34), fy+fh*0.56);
+    offCtx.lineTo(px(0.20), fy+fh*0.62);
+    offCtx.closePath();
+    offCtx.fillStyle = '#a05838';
+    offCtx.fill();
+
+    // ナックル
+    offCtx.fillStyle = '#f3bc90';
+    const kR = Math.max(1, fw*0.055);
+    for (let i=0; i<4; i++){
+      const kx = px(0.26 - i*0.16);
+      const ky = fy + fh*(0.34 + (i%2)*0.02);
+      offCtx.beginPath();
+      offCtx.ellipse(kx, ky, kR, kR*0.78, -0.25 * toCenter, 0, Math.PI*2);
+      offCtx.fill();
+    }
+
+    offCtx.strokeStyle = '#2a1206';
+    offCtx.lineWidth = Math.max(1, fw*0.03);
+    offCtx.stroke();
+
+    if (handPunch > 0.2){
+      offCtx.fillStyle = '#f5d2ad';
+      const hx = side === 1 ? px(-0.30) : px(0.05);
+      offCtx.fillRect(hx, fy+fh*0.15, fw*0.25, fh*0.25);
+    }
+  };
+
+  // 待機側を先に描き、パンチ側を前面に重ねる
+  const active = player.fistPunch > 0 ? player.fistSide : 0;
+  if (active === 1){
+    drawHand(-1, 0);
+    drawHand(1, punch);
+  } else if (active === -1){
+    drawHand(1, 0);
+    drawHand(-1, punch);
+  } else {
+    drawHand(-1, 0);
+    drawHand(1, 0);
+  }
+}
+
+/* ---------- ピクセル → ASCII 変換 ---------- */
+function sampleAscii(){
+  const pixels = offCtx.getImageData(0, 0, OFF_W, OFF_H).data;
+  const enemyMask = maskEnemyCtx.getImageData(0, 0, OFF_W, OFF_H).data;
+  const fistMask = maskFistCtx.getImageData(0, 0, OFF_W, OFF_H).data;
+  const wallMask = maskWallCtx.getImageData(0, 0, OFF_W, OFF_H).data;
+  const P = PX_CELL;
+
+  for (let r=0; r<VIEW_ROWS; r++){
+    for (let c=0; c<COLS; c++){
+      const px0=c*P, py0=r*P;
+      let totalR=0, totalG=0, totalB=0;
+      let enemyInk=0;
+      let fistInk=0;
+      let wallInk=0;
+
+      // PxP ブロックの平均色を計算
+      for (let dy=0; dy<P; dy++){
+        const rowOff = (py0+dy)*OFF_W*4;
+        for (let dx=0; dx<P; dx++){
+          const i = rowOff + (px0+dx)*4;
+          totalR += pixels[i];
+          totalG += pixels[i+1];
+          totalB += pixels[i+2];
+          enemyInk += enemyMask[i];
+          fistInk += fistMask[i];
+          wallInk += wallMask[i];
+        }
+      }
+      const n    = P*P;
+      const avgR = totalR/n, avgG = totalG/n, avgB = totalB/n;
+      const enemyRatio = enemyInk / (255 * n);
+      const fistRatio  = fistInk  / (255 * n);
+      const wallRatio  = wallInk  / (255 * n);
+
+      // 輝度（知覚加重）→ 文字密度インデックス
+      const lum  = (0.299*avgR + 0.587*avgG + 0.114*avgB) / 255;
+      const pyNorm = (r + 0.5) / VIEW_ROWS;
+      const cxNorm = (c + 0.5) / COLS;
+      const baseDither = (((c + r) & 1) ? -0.045 : 0.045) + Math.sin((c*0.55)+(r*0.23))*0.02;
+
+      if (fistRatio > 0.18){
+        const fIdx = Math.round(Math.min(1, fistRatio) * FIST_DENSITY_MAX);
+        gridChar[r][c] = FIST_DENSITY[Math.max(0, Math.min(FIST_DENSITY_MAX, fIdx))];
+      } else if (enemyRatio > 0.22){
+        const eIdx = Math.round(enemyRatio * ENEMY_DENSITY_MAX);
+        gridChar[r][c] = ENEMY_DENSITY[Math.max(0, Math.min(ENEMY_DENSITY_MAX, eIdx))];
+      } else if (wallRatio > 0.1){
+        // 壁: 距離減衰 + 縦目地/石ムラで分岐を視認しやすく
+        const mortar = (((c % 6) === 0) ? -0.12 : 0) + (((r % 4) === 0) ? -0.05 : 0);
+        const cornerBoost = Math.abs(0.5 - cxNorm) * 0.08;
+        const wTone = Math.max(0, Math.min(1, (1-lum) * 1.04 + baseDither * 0.55 + mortar + cornerBoost));
+        const wIdx = Math.round(wTone * WALL_DENSITY_MAX);
+        gridChar[r][c] = WALL_DENSITY[Math.max(0, Math.min(WALL_DENSITY_MAX, wIdx))];
+      } else {
+        const isCeil = pyNorm < 0.5;
+        if (isCeil){
+          // 天井: 軽く薄いノイズで空間を上方向へ分離
+          const star = (((c*13 + r*7) % 29) === 0) ? 0.18 : 0;
+          const cTone = Math.max(0, Math.min(1, (1-lum) * 0.42 + (0.5 - pyNorm) * 0.28 + baseDither * 0.55 + star));
+          const cIdx = Math.round(cTone * CEIL_DENSITY_MAX);
+          gridChar[r][c] = CEIL_DENSITY[Math.max(0, Math.min(CEIL_DENSITY_MAX, cIdx))];
+        } else {
+          // 床: 遠近方向の筋 + 横方向のグリッド感で横道の口を見やすく
+          const depthBand = ((r + Math.floor(c*0.12)) % 3 === 0) ? 0.10 : -0.02;
+          const sideLane = Math.abs(0.5 - cxNorm) * 0.10;
+          const fTone = Math.max(0, Math.min(1, (1-lum) * 0.92 + (pyNorm - 0.5) * 0.58 + baseDither * 0.85 + depthBand + sideLane));
+          const fIdx = Math.round(fTone * FLOOR_DENSITY_MAX);
+          gridChar[r][c] = FLOOR_DENSITY[Math.max(0, Math.min(FLOOR_DENSITY_MAX, fIdx))];
+        }
+      }
+
+      // 文字色：白背景でも潰れない範囲で、色差は残す
+      const maxCh  = Math.max(1, avgR, avgG, avgB);
+      const scale  = Math.min(0.85, 135/maxCh);
+      if (fistRatio > 0.18){
+        // 腕セルは肌色を保持しつつ少し締める
+        const fr = Math.max(40, Math.round(avgR * 0.85));
+        const fg = Math.max(28, Math.round(avgG * 0.76));
+        const fb = Math.max(18, Math.round(avgB * 0.70));
+        gridColor[r][c] = `rgb(${fr},${fg},${fb})`;
+      } else if (enemyRatio > 0.22){
+        // 敵は発色を維持
+        gridColor[r][c] = `rgb(${Math.round(avgR*0.78)},${Math.round(avgG*0.78)},${Math.round(avgB*0.78)})`;
+      } else if (wallRatio > 0.1){
+        // 壁: N/S=暖色 / E/W=青系 の色差を保持
+        const wr = Math.max(24, Math.round(avgR * 0.65));
+        const wg = Math.max(24, Math.round(avgG * 0.65));
+        const wb = Math.max(24, Math.round(avgB * 0.68));
+        gridColor[r][c] = `rgb(${wr},${wg},${wb})`;
+      } else {
+        if (pyNorm < 0.5){
+          // 天井: 青み
+          const cr = Math.round(avgR * scale * 0.68);
+          const cg = Math.round(avgG * scale * 0.82);
+          const cb = Math.round(avgB * scale * 1.08);
+          gridColor[r][c] = `rgb(${cr},${cg},${cb})`;
+        } else {
+          // 床: 暖色
+          const fr = Math.round(avgR * scale * 1.00);
+          const fg = Math.round(avgG * scale * 0.80);
+          const fb = Math.round(avgB * scale * 0.62);
+          gridColor[r][c] = `rgb(${fr},${fg},${fb})`;
+        }
+      }
+    }
+  }
+}
+
+/* ---------- 敵を見失わないための視認マーカー ---------- */
+function overlayEnemyMarkers(){
+  const fistMask = maskFistCtx.getImageData(0, 0, OFF_W, OFF_H).data;
+  for (const e of enemies){
+    const dx = e.x - player.x, dy = e.y - player.y;
+    const dist = Math.sqrt(dx*dx + dy*dy);
+    let ang = Math.atan2(dy, dx) - player.angle;
+    while (ang < -Math.PI) ang += Math.PI*2;
+    while (ang >  Math.PI) ang -= Math.PI*2;
+    if (Math.abs(ang) > FOV/2 + 0.10) continue;
+
+    const corrected = dist * Math.cos(ang);
+    if (corrected <= 0.2 || corrected >= MAX_DIST) continue;
+
+    const offX = Math.round((ang + FOV*0.5) / FOV * (OFF_W - 1));
+    if (offX < 0 || offX >= OFF_W) continue;
+    if (corrected >= offWallDist[offX] - 0.03) continue;
+
+    const col = Math.round((offX / (OFF_W - 1)) * (COLS - 1));
+    const markerY = Math.max(0, Math.min(VIEW_ROWS - 1, Math.round(VIEW_ROWS * 0.5 - (10 / Math.max(corrected, 0.4)))));
+    const offY = Math.max(0, Math.min(OFF_H - 1, Math.round((markerY + 0.5) * PX_CELL)));
+
+    // 腕の上にはマーカーを置かない（透けて見える錯覚を防ぐ）
+    if (fistMask[(offY * OFF_W + offX) * 4] > 0) continue;
+
+    gridChar[markerY][col] = '@';
+    gridColor[markerY][col] = e.hurtTimer > 0 ? '#ff0000' : '#111111';
+  }
+}
+
+/* ============================================================
+   MAP MODE
+============================================================ */
+let mapMode = false;
+function toggleMap(){ mapMode = !mapMode; }
+
+function overlayMiniMapOnMainView(){
+  const tilesW = 17, tilesH = 11;
+  const boxW = tilesW + 2, boxH = tilesH + 2;
+  const left = COLS - boxW - 2;
+  const top = 1;
+  if (left < 0 || top < 0 || top + boxH >= VIEW_ROWS) return;
+
+  for (let y=0; y<boxH; y++){
+    for (let x=0; x<boxW; x++){
+      const gx = left + x, gy = top + y;
+      if (gx<0||gy<0||gx>=COLS||gy>=VIEW_ROWS) continue;
+      const border = y===0 || y===boxH-1 || x===0 || x===boxW-1;
+      if (border){
+        gridChar[gy][gx] = (y===0||y===boxH-1) ? '-' : '|';
+        gridColor[gy][gx] = '#1a1a1a';
+      } else {
+        gridChar[gy][gx] = ' ';
+        gridColor[gy][gx] = '#666';
+      }
+    }
+  }
+  gridChar[top][left] = '+';
+  gridChar[top][left+boxW-1] = '+';
+  gridChar[top+boxH-1][left] = '+';
+  gridChar[top+boxH-1][left+boxW-1] = '+';
+
+  const px = Math.floor(player.x), py = Math.floor(player.y);
+  const sx = px - Math.floor(tilesW/2);
+  const sy = py - Math.floor(tilesH/2);
+  for (let y=0; y<tilesH; y++){
+    for (let x=0; x<tilesW; x++){
+      const mx = sx + x, my = sy + y;
+      const gx = left + 1 + x, gy = top + 1 + y;
+      let ch=' ', col='#777';
+      if (mx>=0&&my>=0&&mx<MAP_W&&my<MAP_H){
+        const t = MAP_RAW[my][mx];
+        if (t==='#'){ ch='#'; col='#222'; }
+        else if (t==='S'){ ch='S'; col='#1f8f1f'; }
+        else if (t==='G'){ ch='G'; col='#c88a00'; }
+        else { ch='.'; col='#8f8f8f'; }
+      }
+      gridChar[gy][gx] = ch;
+      gridColor[gy][gx] = col;
+    }
+  }
+  for (const e of enemies){
+    const ex = Math.floor(e.x) - sx, ey = Math.floor(e.y) - sy;
+    if (ex<0||ey<0||ex>=tilesW||ey>=tilesH) continue;
+    const gx = left + 1 + ex, gy = top + 1 + ey;
+    gridChar[gy][gx] = 'e';
+    gridColor[gy][gx] = '#7a1111';
+  }
+  const ptx = Math.floor(player.x) - sx, pty = Math.floor(player.y) - sy;
+  if (ptx>=0&&pty>=0&&ptx<tilesW&&pty<tilesH){
+    const gx = left + 1 + ptx, gy = top + 1 + pty;
+    gridChar[gy][gx] = 'P';
+    gridColor[gy][gx] = '#cc3300';
+  }
+}
+
+function buildMapView(){
+  for (let r=0;r<VIEW_ROWS;r++)
+    for (let c=0;c<COLS;c++){ gridChar[r][c]=' '; gridColor[r][c]='#111'; }
+
+  const title = '────────────── MAZE MAP ──────────────';
+  const tx0 = Math.floor((COLS-title.length)/2);
+  for (let i=0;i<title.length;i++) gridChar[0][tx0+i]=title[i];
+
+  const winTilesW = Math.max(11, Math.min(MAP_W, Math.floor((COLS-6)/2)));
+  const winTilesH = Math.max(7, Math.min(MAP_H, VIEW_ROWS-4));
+  const halfW = Math.floor(winTilesW/2), halfH = Math.floor(winTilesH/2);
+  const centerX = Math.floor(player.x), centerY = Math.floor(player.y);
+  const sx = Math.max(0, Math.min(MAP_W-winTilesW, centerX-halfW));
+  const sy = Math.max(0, Math.min(MAP_H-winTilesH, centerY-halfH));
+  const offsetX = Math.floor((COLS-winTilesW*2)/2);
+  const offsetY = 1;
+
+  for (let y=0; y<winTilesH; y++){
+    const my = sy + y;
+    const ty = offsetY + y;
+    if (ty<0||ty>=VIEW_ROWS) continue;
+    for (let x=0; x<winTilesW; x++){
+      const mx = sx + x;
+      const ch = MAP_RAW[my][mx];
+      const cx = offsetX+x*2;
+      if (cx<0||cx+1>=COLS) continue;
+      let display='·', col='#aaa';
+      if (ch==='#'){ display='█'; col='#444'; }
+      else if (ch==='S'){ display='S'; col='#1f8f1f'; }
+      else if (ch==='G'){ display='G'; col='#d49f12'; }
+      gridChar[ty][cx]=display; gridChar[ty][cx+1]=display;
+      gridColor[ty][cx]=col; gridColor[ty][cx+1]=col;
+    }
+  }
+  for (const e of enemies){
+    const mx=Math.floor(e.x), my=Math.floor(e.y);
+    if (mx<sx||my<sy||mx>=sx+winTilesW||my>=sy+winTilesH) continue;
+    const ex=offsetX+(mx-sx)*2, ey=offsetY+(my-sy);
+    if (ex<0||ey<0||ex+1>=COLS||ey>=VIEW_ROWS) continue;
+    gridChar[ey][ex]=e.char; gridChar[ey][ex+1]=e.char;
+    gridColor[ey][ex]=e.color; gridColor[ey][ex+1]=e.color;
+  }
+  const px=offsetX+(Math.floor(player.x)-sx)*2, py=offsetY+(Math.floor(player.y)-sy);
+  if (px>=0&&py>=0&&px+1<COLS&&py<VIEW_ROWS){
+    let a=((player.angle%(Math.PI*2))+Math.PI*2)%(Math.PI*2);
+    let arrow;
+    if      (a<Math.PI*0.25||a>=Math.PI*1.75) arrow='▶';
+    else if (a<Math.PI*0.75)                  arrow='▼';
+    else if (a<Math.PI*1.25)                  arrow='◀';
+    else                                      arrow='▲';
+    gridChar[py][px]=arrow; gridChar[py][px+1]=arrow;
+    gridColor[py][px]='#cc3300'; gridColor[py][px+1]='#cc3300';
+  }
+  const legend='█ 壁  ▶ 自分  S 開始  G ゴール';
+  const lx=Math.floor((COLS-legend.length)/2);
+  for (let i=0;i<legend.length;i++)
+    if (lx+i>=0&&lx+i<COLS) gridChar[VIEW_ROWS-1][lx+i]=legend[i];
+}
+
+/* ============================================================
+   HUD
+============================================================ */
+function isFullWidth(ch){
+  if (!ch) return false;
+  const c=ch.codePointAt(0);
+  return (c>=0x1100&&c<=0x115F)||(c>=0x2E80&&c<=0x303E)||
+         (c>=0x3041&&c<=0x33FF)||(c>=0x3400&&c<=0x4DBF)||
+         (c>=0x4E00&&c<=0x9FFF)||(c>=0xA000&&c<=0xA4CF)||
+         (c>=0xAC00&&c<=0xD7A3)||(c>=0xF900&&c<=0xFAFF)||
+         (c>=0xFE30&&c<=0xFE4F)||(c>=0xFF00&&c<=0xFF60)||
+         (c>=0xFFE0&&c<=0xFFE6);
+}
+function fitToWidth(s,w){
+  let out='',cur=0;
+  for (const ch of s){
+    const cw=isFullWidth(ch)?2:1;
+    if (cur+cw>w) break;
+    out+=ch; cur+=cw;
+  }
+  if (cur<w) out+=' '.repeat(w-cur);
+  return out;
+}
+function putRawLine(row, text){
+  let c=0;
+  for (const ch of text){
+    if (c>=COLS) break;
+    if (isFullWidth(ch)){
+      if (c+2>COLS){ gridChar[row][c]=' '; c++; continue; }
+      gridChar[row][c]=ch; gridChar[row][c+1]=ch; c+=2;
+    } else { gridChar[row][c]=ch; c++; }
+  }
+  while (c<COLS){ gridChar[row][c]=' '; c++; }
+}
+function buildHud(){
+  putRawLine(HUD_ROW_DIVIDER, '─'.repeat(COLS));
+
+  const barW=36;
+  const ratio=Math.max(0,player.hp)/player.maxHp;
+  const filled=Math.round(barW*ratio);
+  const bar='█'.repeat(filled)+'░'.repeat(barW-filled);
+  putRawLine(HUD_ROW_HP, fitToWidth(' HP '+bar+' '+Math.max(0,player.hp).toString().padStart(3,' ')+'/'+player.maxHp, COLS));
+
+  let enemyLine;
+  if (mapMode){
+    enemyLine=' ─ Mキーで戻る';
+  } else if (statusMsgTimer>0){
+    enemyLine=' '+statusMsg;
+  } else {
+    const counts={};
+    for (const e of enemies) counts[e.type.name]=(counts[e.type.name]||0)+1;
+    const parts=Object.entries(counts).map(([n,c])=>n+'x'+c);
+    enemyLine=' 敵 '+(parts.length?parts.join(' '):'なし')+'   斃 '+kills;
+  }
+  putRawLine(HUD_ROW_ENEMIES, fitToWidth(enemyLine, COLS));
+}
+
+/* ============================================================
+   DRAW
+============================================================ */
+function drawFrame(){
+  // ダメージ時は主キャンバスの背景をわずかに赤くする
+  ctx.fillStyle = player.hurtFlash>0 ? '#fff6f6' : '#ffffff';
+  ctx.fillRect(0, 0, canvas.width/DPR, canvas.height/DPR);
+  ctx.font = FONT_SIZE+'px "Courier New","Menlo",monospace';
+  ctx.textBaseline='top'; ctx.textAlign='center';
+
+  for (let r=0;r<ROWS;r++){
+    let c=0;
+    while (c<COLS){
+      const ch=gridChar[r][c];
+      if (ch===' '){ c++; continue; }
+      const color=gridColor[r][c]||'#111';
+
+      // ラン検出（同文字×同色をまとめて描画）
+      let runEnd=c+1;
+      while (runEnd<COLS && gridChar[r][runEnd]===ch && gridColor[r][runEnd]===color) runEnd++;
+
+      const y=r*CHAR_H+(CHAR_H-FONT_SIZE)*0.5;
+      ctx.fillStyle=color;
+
+      if (isFullWidth(ch)){
+        let cc=c;
+        while (cc<runEnd){
+          if (cc+1<runEnd){ ctx.fillText(ch, cc*CHAR_W+CHAR_W, y); cc+=2; }
+          else { ctx.fillText(ch, cc*CHAR_W+CHAR_W*0.5, y); cc++; }
+        }
+      } else {
+        for (let cc=c;cc<runEnd;cc++)
+          ctx.fillText(ch, cc*CHAR_W+CHAR_W*0.5, y);
+      }
+      c=runEnd;
+    }
+  }
+  drawTouchControlsOverlay();
+}
+
+function drawTouchControlsOverlay(){
+  if (!touchControls.enabled || gameOver) return;
+  const W = canvas.width / DPR;
+  const H = canvas.height / DPR;
+  const radius = touchStick.maxDist;
+
+  const baseVisible = touchStick.active ? 0.28 : 0.15;
+  const knobVisible = touchStick.active ? 0.45 : 0.2;
+  const baseX = touchStick.active ? touchStick.baseX : Math.min(W * 0.22, 120);
+  const baseY = touchStick.active ? touchStick.baseY : H * 0.78;
+  const knobX = touchStick.active ? touchStick.knobX : baseX;
+  const knobY = touchStick.active ? touchStick.knobY : baseY;
+
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = `rgba(20,20,20,${baseVisible})`;
+  ctx.beginPath();
+  ctx.arc(baseX, baseY, radius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = `rgba(255,255,255,${knobVisible})`;
+  ctx.beginPath();
+  ctx.arc(knobX, knobY, radius * 0.38, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = 'rgba(90,20,20,0.07)';
+  ctx.fillRect(W * 0.5, 0, W * 0.5, H);
+  ctx.restore();
+}
+
+/* ============================================================
+   INPUT
+============================================================ */
+const held={up:false,down:false,left:false,right:false,attack:false};
+const attackEdge={fired:false};
+const touchControls = { enabled: (navigator.maxTouchPoints || 0) > 0 || window.matchMedia('(pointer: coarse)').matches };
+const touchStick = {
+  active:false,
+  pointerId:null,
+  baseX:0, baseY:0,
+  knobX:0, knobY:0,
+  maxDist:56,
+};
+
+function applyTouchAxes(nx, ny){
+  const dead = 0.22;
+  setKey('left', nx < -dead);
+  setKey('right', nx > dead);
+  setKey('up', ny < -dead);
+  setKey('down', ny > dead);
+}
+function resetTouchAxes(){
+  setKey('left', false);
+  setKey('right', false);
+  setKey('up', false);
+  setKey('down', false);
+}
+function updateStickFromEvent(ev){
+  const rect = canvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const y = ev.clientY - rect.top;
+  let dx = x - touchStick.baseX;
+  let dy = y - touchStick.baseY;
+  const len = Math.hypot(dx, dy) || 1;
+  const capped = Math.min(touchStick.maxDist, len);
+  const scale = capped / len;
+  dx *= scale; dy *= scale;
+  touchStick.knobX = touchStick.baseX + dx;
+  touchStick.knobY = touchStick.baseY + dy;
+  applyTouchAxes(dx / touchStick.maxDist, dy / touchStick.maxDist);
+}
+
+function setKey(name,on){
+  if (held[name]===on) return;
+  if (name==='attack'&&on&&!held.attack) attackEdge.fired=true;
+  held[name]=on;
+}
+window.addEventListener('keydown',(e)=>{
+  switch(e.key){
+    case 'ArrowUp':case'w':case'W':setKey('up',true);break;
+    case 'ArrowDown':case's':case'S':setKey('down',true);break;
+    case 'ArrowLeft':case'a':case'A':setKey('left',true);break;
+    case 'ArrowRight':case'd':case'D':setKey('right',true);break;
+    case ' ':case'Enter':case'j':case'J':case'f':case'F':
+      setKey('attack',true);e.preventDefault();break;
+    case 'm':case'M':toggleMap();e.preventDefault();break;
+  }
+});
+window.addEventListener('keyup',(e)=>{
+  switch(e.key){
+    case 'ArrowUp':case'w':case'W':setKey('up',false);break;
+    case 'ArrowDown':case's':case'S':setKey('down',false);break;
+    case 'ArrowLeft':case'a':case'A':setKey('left',false);break;
+    case 'ArrowRight':case'd':case'D':setKey('right',false);break;
+    case ' ':case'Enter':case'j':case'J':case'f':case'F':setKey('attack',false);break;
+  }
+});
+canvas.addEventListener('pointerdown',(ev)=>{
+  if (!touchControls.enabled) return;
+  ev.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const x = ev.clientX - rect.left;
+  const y = ev.clientY - rect.top;
+  if (x < rect.width * 0.5 && !touchStick.active){
+    touchStick.active = true;
+    touchStick.pointerId = ev.pointerId;
+    touchStick.baseX = x;
+    touchStick.baseY = y;
+    touchStick.knobX = x;
+    touchStick.knobY = y;
+    updateStickFromEvent(ev);
+  } else if (x >= rect.width * 0.5){
+    setKey('attack', true);
+    setKey('attack', false);
+  }
+});
+canvas.addEventListener('pointermove',(ev)=>{
+  if (!touchControls.enabled) return;
+  if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
+  ev.preventDefault();
+  updateStickFromEvent(ev);
+});
+canvas.addEventListener('pointerup',(ev)=>{
+  if (!touchControls.enabled) return;
+  if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
+  ev.preventDefault();
+  touchStick.active = false;
+  touchStick.pointerId = null;
+  resetTouchAxes();
+});
+canvas.addEventListener('pointercancel',(ev)=>{
+  if (!touchControls.enabled) return;
+  if (!touchStick.active || ev.pointerId !== touchStick.pointerId) return;
+  ev.preventDefault();
+  touchStick.active = false;
+  touchStick.pointerId = null;
+  resetTouchAxes();
+});
+window.addEventListener('contextmenu',e=>e.preventDefault());
+
+/* ============================================================
+   UPDATE
+============================================================ */
+function tryMove(ent,dx,dy){
+  const r = ent.radius || 0.22;
+  const otherEnemyBlock = (nx, ny) => {
+    if (!ent.isEnemy) return false;
+    for (const o of enemies){
+      if (o===ent) continue;
+      const rr = r + (o.radius || 0.22);
+      const ox = o.x - nx, oy = o.y - ny;
+      if (ox*ox + oy*oy < rr*rr) return true;
+    }
+    return false;
+  };
+  const wallBlocked = (nx, ny) =>
+    isWall(nx-r, ny-r) || isWall(nx+r, ny-r) || isWall(nx-r, ny+r) || isWall(nx+r, ny+r);
+
+  const nx=ent.x+dx;
+  if (!wallBlocked(nx, ent.y) && !otherEnemyBlock(nx, ent.y)) ent.x=nx;
+  const ny=ent.y+dy;
+  if (!wallBlocked(ent.x, ny) && !otherEnemyBlock(ent.x, ny)) ent.y=ny;
+}
+function flashStatus(msg,dur){ statusMsg=msg; statusMsgTimer=dur||1.2; }
+function resetMazeWorld(){
+  generateMaze(MAZE_W, MAZE_H);
+  player.x = startCell.x + 0.5;
+  player.y = startCell.y + 0.5;
+  player.angle = 0;
+}
+
+let gameOver=false;
+
+function update(dt){
+  if (gameOver||mapMode){ attackEdge.fired=false; return; }
+
+  const turnSpeed=Math.PI*1.05;
+  if (held.left)  player.angle-=turnSpeed*dt;
+  if (held.right) player.angle+=turnSpeed*dt;
+
+  const moveSpeed=2.6;
+  let mv=0;
+  if (held.up)   mv+=1;
+  if (held.down) mv-=0.6;
+  if (mv!==0) tryMove(player,
+    Math.cos(player.angle)*moveSpeed*mv*dt,
+    Math.sin(player.angle)*moveSpeed*mv*dt);
+  if (tileAt(player.x, player.y)==='G'){
+    flashStatus('GOAL! 新しい迷路を生成',1.5);
+    kills += 3;
+    resetMazeWorld();
+    spawnInitialEnemies();
+    spawnTimer = 1.0;
+  }
+
+  player.attackCooldown=Math.max(0,player.attackCooldown-dt);
+  if (attackEdge.fired){
+    attackEdge.fired=false;
+    if (player.attackCooldown<=0){
+      player.attackCooldown=0.38;
+      player.attackFlash=0.08;
+      player.fistSide*=-1;
+      player.fistPunch=0.38;
+      doPlayerAttack();
+    }
+  }
+  player.attackFlash=Math.max(0,player.attackFlash-dt);
+  player.hurtFlash  =Math.max(0,player.hurtFlash  -dt);
+  player.fistPunch  =Math.max(0,player.fistPunch  -dt);
+
+  for (let i=enemies.length-1;i>=0;i--){
+    const e=enemies[i];
+    e.hurtTimer=Math.max(0,e.hurtTimer-dt);
+    e.atkTimer =Math.max(0,e.atkTimer -dt);
+    const dx=player.x-e.x, dy=player.y-e.y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if (d>0.001){
+      const nx=dx/d, ny=dy/d;
+      if (d>e.type.atkRange*0.9){
+        const sp=e.type.speed;
+        tryMove(e, nx*sp*dt, ny*sp*dt);
+      } else if (e.atkTimer<=0){
+        const [a,b]=e.type.dmg;
+        const dmg=a+Math.floor(Math.random()*(b-a+1));
+        player.hp-=dmg; player.hurtFlash=0.18;
+        e.atkTimer=e.type.atkCD;
+        flashStatus(e.type.name+'の攻撃! '+dmg+'ダメージ',1.2);
+        if (player.hp<=0){ player.hp=0; triggerGameOver(); }
+      }
+    }
+  }
+
+  spawnTimer-=dt;
+  const desired=3+Math.min(4,Math.floor(kills/4));
+  if (enemies.length<desired&&spawnTimer<=0){ spawnRandomEnemy(); spawnTimer=1.5+Math.random()*1.5; }
+  if (statusMsgTimer>0) statusMsgTimer-=dt;
+}
+
+function doPlayerAttack(){
+  const cone=0.32, reach=1.7;
+  let best=null, bestDist=Infinity;
+  for (const e of enemies){
+    const dx=e.x-player.x, dy=e.y-player.y;
+    const d=Math.sqrt(dx*dx+dy*dy);
+    if (d>reach) continue;
+    let ang=Math.atan2(dy,dx)-player.angle;
+    while (ang<-Math.PI) ang+=Math.PI*2;
+    while (ang> Math.PI) ang-=Math.PI*2;
+    if (Math.abs(ang)>cone) continue;
+    if (d<bestDist){ bestDist=d; best=e; }
+  }
+  if (best){
+    const dmg=player.attackPower+Math.floor(Math.random()*5)-2;
+    best.hp-=dmg; best.hurtTimer=0.18;
+    flashStatus(best.type.name+'に '+dmg+'ダメージ',0.9);
+    if (best.hp<=0){ enemies=enemies.filter(x=>x!==best); kills++; flashStatus(best.type.name+'を倒した',1.0); }
+  } else { flashStatus('空振り',0.5); }
+}
+
+/* ============================================================
+   GAME OVER
+============================================================ */
+const overlay=document.getElementById('gameover');
+const finalScoreEl=document.getElementById('finalScore');
+const restartBtn=document.getElementById('restart');
+
+function triggerGameOver(){
+  gameOver=true; mapMode=false;
+  finalScoreEl.textContent=kills;
+  setTimeout(()=>overlay.classList.add('show'),600);
+}
+function resetGame(){
+  resetMazeWorld();
+  player.hp=player.maxHp;
+  player.attackCooldown=0;player.attackFlash=0;player.hurtFlash=0;player.fistPunch=0;player.fistSide=-1;
+  kills=0;spawnTimer=0;statusMsg='';statusMsgTimer=0;
+  spawnInitialEnemies();gameOver=false;mapMode=false;
+  overlay.classList.remove('show');
+}
+restartBtn.addEventListener('click',resetGame);
+restartBtn.addEventListener('touchend',(e)=>{e.preventDefault();resetGame();},{passive:false});
+
+/* ============================================================
+   GAME LOOP  (30 fps)
+============================================================ */
+const FRAME_DT=1/30;
+let lastTime=0, acc=0;
+
+function loop(now){
+  requestAnimationFrame(loop);
+  const t=now/1000;
+  const dt=lastTime?Math.min(0.1,t-lastTime):0;
+  lastTime=t; acc+=dt;
+  if (acc<FRAME_DT) return;
+  const step=Math.min(acc,FRAME_DT*2);
+  acc=0;
+
+  update(step);
+  clearGrid();
+
+  if (mapMode){
+    buildMapView();
+  } else {
+    render3D();    // ← オフスクリーンに低ポリ3Dを描画
+    sampleAscii(); // ← ピクセル輝度/色 → ASCII文字/色
+    overlayEnemyMarkers();
+    overlayMiniMapOnMainView();
+  }
+
+  buildHud();
+  drawFrame();
+}
+
+/* ============================================================
+   BOOT
+============================================================ */
+resize();
+resetMazeWorld();
+spawnInitialEnemies();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
