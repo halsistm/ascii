@@ -1164,8 +1164,6 @@ function drawTouchControlsOverlay(){
   ctx.beginPath();
   ctx.arc(knobX, knobY, radius * 0.38, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = 'rgba(90,20,20,0.07)';
-  ctx.fillRect(W * 0.5, 0, W * 0.5, H);
   ctx.restore();
 }
 
@@ -1311,11 +1309,11 @@ let gameOver=false;
 function update(dt){
   if (gameOver||mapMode){ attackEdge.fired=false; return; }
 
-  const turnSpeed=Math.PI*1.05;
+  const turnSpeed=Math.PI*0.72;
   if (held.left)  player.angle-=turnSpeed*dt;
   if (held.right) player.angle+=turnSpeed*dt;
 
-  const moveSpeed=2.6;
+  const moveSpeed=1.6;
   let mv=0;
   if (held.up)   mv+=1;
   if (held.down) mv-=0.6;
