@@ -32,7 +32,7 @@
   canvas{ display:block;width:100%;height:auto;image-rendering:pixelated;touch-action:none; }
   .screen-wrap::after{
     content:"";position:absolute;inset:0;pointer-events:none;
-    background:repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,0.04) 2px 3px);
+    background:repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0,0,0,0.025) 2px 3px);
     mix-blend-mode:multiply;
   }
   button.btn{
@@ -79,7 +79,7 @@
 /* ============================================================
    GRID & DISPLAY
 ============================================================ */
-const COLS = 120, ROWS = 36;
+const COLS = 96, ROWS = 36;
 const VIEW_ROWS       = 33;
 const HUD_ROW_DIVIDER = 33;
 const HUD_ROW_HP      = 34;
@@ -91,16 +91,21 @@ let CHAR_W = 0, CHAR_H = 0, FONT_SIZE = 0, DPR = 1;
 
 function resize(){
   DPR = Math.min(window.devicePixelRatio || 1, 3);
-  const cssW = canvas.parentElement.clientWidth;
+  const wrap = canvas.parentElement;
+  const frameW = wrap.parentElement.clientWidth;
+  const availableH = Math.max(300, window.innerHeight - 54);
+  const maxWByHeight = availableH * COLS / (ROWS * 1.74);
+  const cssW = Math.floor(Math.min(frameW, maxWByHeight));
   CHAR_W = cssW / COLS;
-  CHAR_H = CHAR_W * 1.7;
+  CHAR_H = CHAR_W * 1.74;
   const cssH = CHAR_H * ROWS;
+  wrap.style.width = cssW + 'px';
   canvas.style.width  = cssW + 'px';
   canvas.style.height = cssH + 'px';
   canvas.width  = Math.round(cssW * DPR);
   canvas.height = Math.round(cssH * DPR);
   ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-  FONT_SIZE = Math.floor(CHAR_H * 0.95);
+  FONT_SIZE = Math.floor(CHAR_H * 1.02);
   ctx.font = FONT_SIZE + 'px "Courier New","Menlo",monospace';
   ctx.textBaseline = 'top';
   ctx.textAlign    = 'center';
@@ -252,8 +257,8 @@ function spawnRandomEnemy(){
 /* ============================================================
    RAYCASTING
 ============================================================ */
-const FOV      = Math.PI / 1.8;
-const MAX_DIST = 34;
+const FOV      = Math.PI / 2.2;
+const MAX_DIST = 26;
 
 function castRay(angle){
   const cos=Math.cos(angle), sin=Math.sin(angle);
@@ -275,7 +280,7 @@ function castRay(angle){
 }
 
 /* ============================================================
-   FRAME GRID  (80 × 24)
+   FRAME GRID
 ============================================================ */
 const gridChar  = [];
 const gridColor = [];
@@ -317,27 +322,18 @@ const maskWallCtx = maskWall.getContext('2d');
 
 // 列ごとの壁距離（スプライトオクルージョン用）
 const offWallDist = new Float32Array(OFF_W);
+const offWallEdge = new Uint8Array(OFF_W);
 
 // 輝度→文字 マップ（暗い=密度高）
 // 各文字の「黒面積比」が概ね単調増加になるよう選定
-const WALL_DENSITY      = '  .,:;-_=+!|/\\()rlviLJcouzxeaXAHMNW%#@▒▓█';
+const WALL_DENSITY      = '    ...:::---===+++***###@@';
 const WALL_DENSITY_MAX  = WALL_DENSITY.length - 1;
+const WALL_EDGE_DENSITY = '||!!##@@';
+const WALL_EDGE_DENSITY_MAX = WALL_EDGE_DENSITY.length - 1;
 const ENEMY_DENSITY     = '@@%%##██';
 const ENEMY_DENSITY_MAX = ENEMY_DENSITY.length - 1;
 const FIST_DENSITY      = '░▒▓▀▄▌▐▒▓▓█▓█▓█';
 const FIST_DENSITY_MAX  = FIST_DENSITY.length - 1;
-const CEIL_DENSITY      = '    ..`\'^';
-const CEIL_DENSITY_MAX  = CEIL_DENSITY.length - 1;
-const FLOOR_DENSITY     = '  .,:;i1tfLCG08@';
-const FLOOR_DENSITY_MAX = FLOOR_DENSITY.length - 1;
-
-// 天井・床グラデーション（初期化時に1回だけ作成）
-const ceilGrad = offCtx.createLinearGradient(0, 0, 0, OFF_H * 0.5);
-ceilGrad.addColorStop(0, '#0b1220');
-ceilGrad.addColorStop(1, '#243853');
-const floorGrad = offCtx.createLinearGradient(0, OFF_H * 0.5, 0, OFF_H);
-floorGrad.addColorStop(0, '#4f3621');
-floorGrad.addColorStop(1, '#1f1208');
 
 /* ---------- 3D シーン描画 ---------- */
 function render3D(){
@@ -345,17 +341,14 @@ function render3D(){
   maskEnemyCtx.clearRect(0, 0, W, H);
   maskFistCtx.clearRect(0, 0, W, H);
   maskWallCtx.clearRect(0, 0, W, H);
-  let prevTop = -999, prevBot = -999;
+  offWallEdge.fill(0);
+  let prevTop = -999, prevBot = -999, prevDist = MAX_DIST;
 
-  // 1. 天井
-  offCtx.fillStyle = ceilGrad;
-  offCtx.fillRect(0, 0, W, H*0.5+1);
+  // 1. 床と天井は白紙にして、壁と敵のシルエットを読みやすくする
+  offCtx.fillStyle = '#ffffff';
+  offCtx.fillRect(0, 0, W, H);
 
-  // 2. 床
-  offCtx.fillStyle = floorGrad;
-  offCtx.fillRect(0, H*0.5, W, H*0.5+1);
-
-  // 3. 壁ストリップ（列単位・距離ライティング）
+  // 2. 壁ストリップ（列単位・距離ライティング）
   for (let col=0; col<W; col++){
     const t        = col / (W-1);
     const rayAngle = player.angle - FOV/2 + t*FOV;
@@ -366,9 +359,13 @@ function render3D(){
 
     const wallH   = Math.min(H, H / Math.max(corrected*0.55, 0.45));
     const wallTop = (H - wallH) * 0.5;
+    const depthJump = Math.abs(corrected - prevDist);
+    const isDepthEdge = depthJump > 0.72;
+    if (isDepthEdge) offWallEdge[col] = 1;
 
     // 近い=明るい / 遠い=暗い、壁の向きで色調を変えて方向感覚を補助
-    const lit = Math.max(0.04, 1.0 - corrected / 13);
+    const depthBand = Math.floor(corrected * 0.85) % 2;
+    const lit = Math.max(0.06, 1.0 - corrected / 13) * (depthBand ? 0.82 : 1.05);
     let r, g, bl;
     if (hit.side === 1) {
       // E/W壁（縦面）: クールなブルーグレー
@@ -385,7 +382,7 @@ function render3D(){
     offCtx.fillStyle = `rgb(${r},${g},${bl})`;
     offCtx.fillRect(col, wallTop, 1, wallH);
 
-    // 壁の輪郭（黒線）: 上端/下端と角の段差を強調
+    // 壁の輪郭（黒線）: 上端/下端、角、奥行き段差を強調
     const topI = Math.round(wallTop);
     const botI = Math.round(wallTop + wallH - 1);
     offCtx.fillStyle = 'rgb(0,0,0)';
@@ -399,14 +396,22 @@ function render3D(){
       const y0 = Math.min(botI, prevBot) - 1;
       offCtx.fillRect(col, y0, 1, Math.abs(botI - prevBot) + 3);
     }
+    if (isDepthEdge){
+      const y0 = Math.max(0, Math.min(topI, prevTop > -900 ? prevTop : topI) - 2);
+      const y1 = Math.min(H, Math.max(botI, prevBot > -900 ? prevBot : botI) + 3);
+      offCtx.fillRect(col, y0, 2, Math.max(1, y1 - y0));
+      maskWallCtx.fillStyle = '#ffffff';
+      maskWallCtx.fillRect(col, y0, 2, Math.max(1, y1 - y0));
+    }
     prevTop = topI;
     prevBot = botI;
+    prevDist = corrected;
 
     maskWallCtx.fillStyle = '#ffffff';
     maskWallCtx.fillRect(col, wallTop, 1, wallH);
   }
 
-  // 4. 敵スプライト（奥から手前の順、列単位オクルージョン）
+  // 3. 敵スプライト（奥から手前の順、列単位オクルージョン）
   const visible = [];
   for (const e of enemies){
     const dx=e.x-player.x, dy=e.y-player.y;
@@ -439,7 +444,7 @@ function render3D(){
     drawEnemySilhouette(e, spriteLeft, spriteTop, spriteW, spriteH, corrected);
   }
 
-  // 5. フラッシュ演出（ダメージ=赤, 攻撃=黄白）
+  // 4. フラッシュ演出（ダメージ=赤, 攻撃=黄白）
   if (player.hurtFlash > 0){
     offCtx.fillStyle = `rgba(220,10,10,${0.30 * player.hurtFlash / 0.18})`;
     offCtx.fillRect(0,0,W,H);
@@ -448,7 +453,7 @@ function render3D(){
     offCtx.fillRect(0,0,W,H);
   }
 
-  // 6. 一人称こぶし
+  // 5. 一人称こぶし
   renderFistOffscreen();
 }
 
@@ -795,6 +800,9 @@ function sampleAscii(){
       let enemyInk=0;
       let fistInk=0;
       let wallInk=0;
+      let edgeInk=0;
+      let wallDistSum=0;
+      let wallDistCount=0;
 
       // PxP ブロックの平均色を計算
       for (let dy=0; dy<P; dy++){
@@ -807,6 +815,11 @@ function sampleAscii(){
           enemyInk += enemyMask[i];
           fistInk += fistMask[i];
           wallInk += wallMask[i];
+          edgeInk += offWallEdge[px0+dx];
+          if (wallMask[i] > 0){
+            wallDistSum += offWallDist[px0+dx];
+            wallDistCount++;
+          }
         }
       }
       const n    = P*P;
@@ -814,10 +827,11 @@ function sampleAscii(){
       const enemyRatio = enemyInk / (255 * n);
       const fistRatio  = fistInk  / (255 * n);
       const wallRatio  = wallInk  / (255 * n);
+      const edgeRatio  = edgeInk / n;
+      const wallDist   = wallDistCount ? wallDistSum / wallDistCount : MAX_DIST;
 
       // 輝度（知覚加重）→ 文字密度インデックス
       const lum  = (0.299*avgR + 0.587*avgG + 0.114*avgB) / 255;
-      const pyNorm = (r + 0.5) / VIEW_ROWS;
       const cxNorm = (c + 0.5) / COLS;
       const baseDither = (((c + r) & 1) ? -0.045 : 0.045) + Math.sin((c*0.55)+(r*0.23))*0.02;
 
@@ -828,33 +842,25 @@ function sampleAscii(){
         const eIdx = Math.round(enemyRatio * ENEMY_DENSITY_MAX);
         gridChar[r][c] = ENEMY_DENSITY[Math.max(0, Math.min(ENEMY_DENSITY_MAX, eIdx))];
       } else if (wallRatio > 0.1){
-        // 壁: 距離減衰 + 縦目地/石ムラで分岐を視認しやすく
-        const mortar = (((c % 6) === 0) ? -0.12 : 0) + (((r % 4) === 0) ? -0.05 : 0);
+        // 壁: 距離段差・距離帯・目地で、手前壁と奥壁の境界を意図的に分離する
+        const depthBand = Math.floor(wallDist * 0.85) % 2;
+        const mortar = (((c % 6) === 0) ? -0.10 : 0) + (((r % 4) === 0) ? -0.04 : 0);
         const cornerBoost = Math.abs(0.5 - cxNorm) * 0.08;
-        const wTone = Math.max(0, Math.min(1, (1-lum) * 1.04 + baseDither * 0.55 + mortar + cornerBoost));
-        const wIdx = Math.round(wTone * WALL_DENSITY_MAX);
-        gridChar[r][c] = WALL_DENSITY[Math.max(0, Math.min(WALL_DENSITY_MAX, wIdx))];
-      } else {
-        const isCeil = pyNorm < 0.5;
-        if (isCeil){
-          // 天井: 軽く薄いノイズで空間を上方向へ分離
-          const star = (((c*13 + r*7) % 29) === 0) ? 0.18 : 0;
-          const cTone = Math.max(0, Math.min(1, (1-lum) * 0.42 + (0.5 - pyNorm) * 0.28 + baseDither * 0.55 + star));
-          const cIdx = Math.round(cTone * CEIL_DENSITY_MAX);
-          gridChar[r][c] = CEIL_DENSITY[Math.max(0, Math.min(CEIL_DENSITY_MAX, cIdx))];
+        const bandTone = depthBand ? 0.12 : -0.05;
+        const edgeBoost = edgeRatio > 0.20 ? 0.42 : 0;
+        const wTone = Math.max(0, Math.min(1, (1-lum) * 1.02 + baseDither * 0.45 + mortar + cornerBoost + bandTone + edgeBoost));
+        if (edgeRatio > 0.20){
+          const eIdx = Math.round(Math.min(1, wTone + 0.16) * WALL_EDGE_DENSITY_MAX);
+          gridChar[r][c] = WALL_EDGE_DENSITY[Math.max(0, Math.min(WALL_EDGE_DENSITY_MAX, eIdx))];
         } else {
-          // 床: 遠近方向の筋 + 横方向のグリッド感で横道の口を見やすく
-          const depthBand = ((r + Math.floor(c*0.12)) % 3 === 0) ? 0.10 : -0.02;
-          const sideLane = Math.abs(0.5 - cxNorm) * 0.10;
-          const fTone = Math.max(0, Math.min(1, (1-lum) * 0.92 + (pyNorm - 0.5) * 0.58 + baseDither * 0.85 + depthBand + sideLane));
-          const fIdx = Math.round(fTone * FLOOR_DENSITY_MAX);
-          gridChar[r][c] = FLOOR_DENSITY[Math.max(0, Math.min(FLOOR_DENSITY_MAX, fIdx))];
+          const wIdx = Math.round(wTone * WALL_DENSITY_MAX);
+          gridChar[r][c] = WALL_DENSITY[Math.max(0, Math.min(WALL_DENSITY_MAX, wIdx))];
         }
+      } else {
+        gridChar[r][c] = ' ';
       }
 
       // 文字色：白背景でも潰れない範囲で、色差は残す
-      const maxCh  = Math.max(1, avgR, avgG, avgB);
-      const scale  = Math.min(0.85, 135/maxCh);
       if (fistRatio > 0.18){
         // 腕セルは肌色を保持しつつ少し締める
         const fr = Math.max(40, Math.round(avgR * 0.85));
@@ -866,24 +872,13 @@ function sampleAscii(){
         gridColor[r][c] = `rgb(${Math.round(avgR*0.78)},${Math.round(avgG*0.78)},${Math.round(avgB*0.78)})`;
       } else if (wallRatio > 0.1){
         // 壁: N/S=暖色 / E/W=青系 の色差を保持
-        const wr = Math.max(24, Math.round(avgR * 0.65));
-        const wg = Math.max(24, Math.round(avgG * 0.65));
-        const wb = Math.max(24, Math.round(avgB * 0.68));
+        const edgeMul = edgeRatio > 0.20 ? 0.46 : 1.0;
+        const wr = Math.max(18, Math.round(avgR * 0.65 * edgeMul));
+        const wg = Math.max(18, Math.round(avgG * 0.65 * edgeMul));
+        const wb = Math.max(18, Math.round(avgB * 0.68 * edgeMul));
         gridColor[r][c] = `rgb(${wr},${wg},${wb})`;
       } else {
-        if (pyNorm < 0.5){
-          // 天井: 青み
-          const cr = Math.round(avgR * scale * 0.68);
-          const cg = Math.round(avgG * scale * 0.82);
-          const cb = Math.round(avgB * scale * 1.08);
-          gridColor[r][c] = `rgb(${cr},${cg},${cb})`;
-        } else {
-          // 床: 暖色
-          const fr = Math.round(avgR * scale * 1.00);
-          const fg = Math.round(avgG * scale * 0.80);
-          const fb = Math.round(avgB * scale * 0.62);
-          gridColor[r][c] = `rgb(${fr},${fg},${fb})`;
-        }
+        gridColor[r][c] = '#111111';
       }
     }
   }
